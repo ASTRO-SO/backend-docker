@@ -423,7 +423,7 @@ router.post("/meanings/:number", async (req, res) => {
   
   try {
     // First get all systems to know which tables to update
-    const systemsQuery = "SELECT id, name FROM astrology ORDER BY id";
+    const systemsQuery = "SELECT id, name FROM numerology ORDER BY id";
     
     db.query(systemsQuery, (err, systems) => {
       if (err) {

@@ -101,22 +101,47 @@ router.put("/:id", (req, res) => {
 // DELETE user
 router.delete("/:id", (req, res) => {
   const { id } = req.params;
-  
-  const query = "DELETE FROM account WHERE idaccount = ?";
-  
-  db.query(query, [id], (err, result) => {
+
+  // Truy vấn để lấy số điện thoại dựa trên idaccount
+  const getPhoneQuery = "SELECT phone FROM account WHERE idaccount = ?";
+  db.query(getPhoneQuery, [id], (err, rows) => {
     if (err) {
-      console.error("Delete error:", err);
-      return res.status(500).json({ error: "Failed to delete user." });
+      console.error("Error fetching phone:", err);
+      return res.status(500).json({ error: "Failed to get user phone." });
     }
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "User not found" });
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "User not found." });
     }
-    
-    res.json({ message: "User deleted successfully" });
+
+    const phone = rows[0].phone;
+
+    // Xóa các dòng trong userastrologyresults trước
+    const deleteResultsQuery = "DELETE FROM userastrologyresults WHERE PhoneNumber = ?";
+    db.query(deleteResultsQuery, [phone], (err) => {
+      if (err) {
+        console.error("Error deleting astrology results:", err);
+        return res.status(500).json({ error: "Failed to delete related astrology results." });
+      }
+
+      // Sau khi xóa thành công thì xóa account
+      const deleteAccountQuery = "DELETE FROM account WHERE idaccount = ?";
+      db.query(deleteAccountQuery, [id], (err, result) => {
+        if (err) {
+          console.error("Delete error:", err);
+          return res.status(500).json({ error: "Failed to delete user." });
+        }
+
+        if (result.affectedRows === 0) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        res.json({ message: "User and related results deleted successfully" });
+      });
+    });
   });
 });
+
 
 // GET user by phone number
 router.get("/phone/:phone", (req, res) => {
