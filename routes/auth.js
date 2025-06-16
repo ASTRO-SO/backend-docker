@@ -105,17 +105,9 @@ router.post('/login', (req, res) => {
   });
 });
 
-// Get user profile (protected route)
-router.get('/profile', (req, res) => {
+router.put('/profile', (req, res) => {
   // Try to get token from cookie first, then from Authorization header
   let token = req.cookies.access_token;
-  
-  console.log("Debug - Backend token check:", {
-    hasCookie: !!req.cookies.access_token,
-    cookieValue: req.cookies.access_token ? req.cookies.access_token.substring(0, 20) + "..." : "none",
-    hasAuthHeader: !!req.headers.authorization,
-    authHeaderValue: req.headers.authorization ? req.headers.authorization.substring(0, 30) + "..." : "none"
-  });
   
   if (!token) {
     const authHeader = req.headers.authorization;
@@ -125,11 +117,8 @@ router.get('/profile', (req, res) => {
   }
   
   if (!token) {
-    console.log("No token found in either cookie or Authorization header");
     return res.status(401).json({ error: 'No token provided.' });
   }
-
-  console.log("Token found, verifying:", token.substring(0, 20) + "...");
 
   jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
     if (err) {
@@ -137,23 +126,39 @@ router.get('/profile', (req, res) => {
       return res.status(401).json({ error: 'Invalid token.' });
     }
 
-    console.log("JWT verified successfully, decoded:", decoded);
-
-    // Use the decoded token to fetch the user's data
     const userId = decoded.idaccount;
-    const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
-    db.query(profileQuery, [userId], (err, results) => {
+    const { fullname, email } = req.body;
+
+    // Basic validation
+    if (!fullname) {
+      return res.status(400).json({ error: 'Full name is required.' });
+    }
+
+    // Update user profile (phone should not be changeable for security reasons)
+    const updateQuery = 'UPDATE account SET fullname = ?, email = ? WHERE idaccount = ?';
+    db.query(updateQuery, [fullname, email || null, userId], (err, result) => {
       if (err) {
         console.error("Database error:", err);
-        return res.status(500).json({ error: 'Database error.' });
-      }
-      if (results.length === 0) {
-        console.log("User not found for ID:", userId);
-        return res.status(404).json({ error: 'User not found.' });
+        return res.status(500).json({ error: 'Database error updating profile.' });
       }
       
-      console.log("Profile data found:", results[0]);
-      res.json(results[0]);
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+
+      // Return updated profile data
+      const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
+      db.query(profileQuery, [userId], (err, results) => {
+        if (err) {
+          console.error("Database error:", err);
+          return res.status(500).json({ error: 'Database error.' });
+        }
+        
+        res.json({ 
+          message: 'Profile updated successfully',
+          user: results[0]
+        });
+      });
     });
   });
 });
