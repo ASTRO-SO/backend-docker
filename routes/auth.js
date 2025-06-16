@@ -7,6 +7,29 @@ require('dotenv').config();
 const router = express.Router();
 const saltRounds = 10; // Adjust for a balance between speed and security
 
+const authenticateToken = (req, res, next) => {
+  // Check for token in cookie first
+  let token = req.cookies.access_token;
+  
+  // If no cookie, check Authorization header
+  if (!token) {
+    const authHeader = req.headers['authorization'];
+    token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  }
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
+    if (err) {
+      return res.status(401).json({ error: 'Invalid token.' });
+    }
+    req.user = decoded;
+    next();
+  });
+};
+
 // User Signup
 router.post('/signup', (req, res) => {
   const { phone, fullname, email, password, confirmPassword } = req.body;
@@ -107,30 +130,29 @@ router.post('/login', (req, res) => {
 });
 
 // Get user profile (protected route)
-router.get('/profile', (req, res) => {
-  // Access token should be stored in the cookie 'access_token'
-  const token = req.cookies.access_token;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated.' });
-  }
-
-  jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
+router.get('/profile', authenticateToken, (req, res) => {
+  const userId = req.user.idaccount;
+  const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
+  
+  db.query(profileQuery, [userId], (err, results) => {
     if (err) {
-      return res.status(401).json({ error: 'Invalid token.' });
+      console.error(err);
+      return res.status(500).json({ error: 'Database error.' });
     }
-
-    // Use the decoded token to fetch the user's data
-    const userId = decoded.idaccount;
-    const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
-    db.query(profileQuery, [userId], (err, results) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Database error.' });
-      }
-      if (results.length === 0) {
-        return res.status(404).json({ error: 'User not found.' });
-      }
-      res.json(results[0]);
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    
+    // Return user data with consistent field names
+    const userData = results[0];
+    res.json({
+      idaccount: userData.idaccount,
+      phone: userData.phone,
+      phoneNumber: userData.phone, // Add alias for consistency
+      fullname: userData.fullname,
+      fullName: userData.fullname,  // Add alias for consistency
+      name: userData.fullname,      // Add alias for consistency
+      email: userData.email
     });
   });
 });
