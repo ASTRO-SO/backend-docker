@@ -1,16 +1,20 @@
-// backend/db.js
-const mysql = require('mysql2/promise');
-require('dotenv').config();
+const mysql = require('mysql2');
+require('dotenv').config(); // dòng này phải có
 
-const pool = mysql.createPool({
+const connection = mysql.createConnection({
   host: process.env.MYSQLHOST,
-  port: process.env.MYSQLPORT,
+  port: process.env.MYSQLPORT || 3306,
   user: process.env.MYSQLUSER,
   password: process.env.MYSQLPASSWORD,
-  database: process.env.MYSQLDATABASE,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+  database: process.env.MYSQLDATABASE
 });
 
-module.exports = pool;
+connection.connect((err) => {
+  if (err) {
+    console.error('❌ Database connection error:', err);
+    process.exit(1);
+  }
+  console.log('✅ Connected to MySQL database');
+});
+
+module.exports = connection;
