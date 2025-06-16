@@ -88,12 +88,13 @@ router.post('/login', (req, res) => {
         { expiresIn: '1h' }
       );
 
-      // Store token in an HTTP-only cookie
       res.cookie('access_token', token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production', // ensures HTTPS in production
-        sameSite: 'Strict'
-      });
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax', // Important for cross-origin
+      maxAge: 3600000, // 1 hour in milliseconds
+      path: '/' // Make sure cookie is available for all paths
+    });
 
       // Send token and role in response for frontend storage
       res.json({ 
