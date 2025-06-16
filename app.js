@@ -18,6 +18,7 @@ app.use(cors({
     'http://localhost:3000',  // React default
     'http://localhost',       // Your current frontend
     'http://localhost:8080'   // Common dev server
+    ,'https://goldeneden.io.vn'
   ],
   credentials: true
 }));
