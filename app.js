@@ -35,5 +35,32 @@ app.use('/api/astrology', astrologyRoutes);
 const dashBoardRoutes = require('./routes/dashboard');
 app.use('/api/users', dashBoardRoutes);
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const fs = require('fs');
+const mysql = require('mysql2/promise');
+
+// Khởi tạo database từ file init.sql
+async function initDB() {
+  try {
+    const sql = fs.readFileSync('./init.sql', 'utf-8');
+
+    const connection = await mysql.createConnection({
+      host: process.env.MYSQLHOST,
+      port: process.env.MYSQLPORT,
+      user: process.env.MYSQLUSER,
+      password: process.env.MYSQLPASSWORD,
+      database: process.env.MYSQLDATABASE,
+      multipleStatements: true
+    });
+
+    await connection.query(sql);
+    console.log('✅ Đã import thành công file init.sql vào MySQL.');
+    await connection.end();
+  } catch (err) {
+    console.error('❌ Lỗi import SQL:', err.message);
+  }
+}
+
+initDB().then(() => {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+});
