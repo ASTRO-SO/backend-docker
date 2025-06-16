@@ -107,15 +107,25 @@ router.post('/login', (req, res) => {
 
 // Get user profile (protected route)
 router.get('/profile', (req, res) => {
-  // Access token should be stored in the cookie 'access_token'
-  const token = req.cookies.access_token;
+  // Try to get token from cookie first, then from Authorization header
+  let token = req.cookies.access_token;
+  
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
+    }
+  }
+  
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided.' });
+  }
 
   jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
     if (err) {
       return res.status(401).json({ error: 'Invalid token.' });
     }
 
-    // Use the decoded token to fetch the user's data
     const userId = decoded.idaccount;
     const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
     db.query(profileQuery, [userId], (err, results) => {
