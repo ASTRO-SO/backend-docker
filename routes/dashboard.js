@@ -116,7 +116,7 @@ router.delete("/:id", (req, res) => {
 
     const phone = rows[0].phone;
 
-    // Xóa các dòng trong userastrologyresults trước
+    // Xóa các dòng trong userastrologyresults 
     const deleteResultsQuery = "DELETE FROM userastrologyresults WHERE PhoneNumber = ?";
     db.query(deleteResultsQuery, [phone], (err) => {
       if (err) {
