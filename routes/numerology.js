@@ -422,7 +422,7 @@ router.post("/meanings/:number", async (req, res) => {
   const { meanings } = req.body; // Array of meanings corresponding to each system
   
   try {
-    // First get all systems to know which tables to updat
+    // First get all systems to know which tables to update
     const systemsQuery = "SELECT id, name FROM numerology ORDER BY id";
     
     db.query(systemsQuery, (err, systems) => {

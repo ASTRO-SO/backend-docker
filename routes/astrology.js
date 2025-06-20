@@ -166,6 +166,42 @@ router.delete("/user-results/:id", (req, res) => {
   });
 });
 
+router.get("/:planet/:zodiac", (req, res) => {
+  const { planet, zodiac } = req.params;
+  
+  console.log(`Fetching interpretation for ${planet} in ${zodiac}`);
+  
+  // Validate planet name (table name)
+  const validPlanets = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', 'neptune', 'pluto', 'chiron', 'ascendant'];
+  
+  if (!validPlanets.includes(planet.toLowerCase())) {
+    return res.status(400).json({ error: "Invalid planet name" });
+  }
+
+  const tableName = planet.toLowerCase();
+  const query = `SELECT Description FROM ${tableName} WHERE ZodiacSign = ? LIMIT 1`;
+  
+  db.query(query, [zodiac], (err, results) => {
+    if (err) {
+      console.error(`Error fetching from ${tableName}:`, err);
+      return res.status(500).json({ error: "Failed to retrieve interpretation." });
+    }
+    
+    if (results.length === 0) {
+      return res.status(404).json({ 
+        error: "No interpretation found",
+        description: `Không tìm thấy giải thích cho ${planet} trong ${zodiac}`
+      });
+    }
+    
+    res.status(200).json({ 
+      planet,
+      zodiac,
+      description: results[0].Description 
+    });
+  });
+});
+
 // @route   GET /api/astrology/meanings/:zodiac
 // @desc    Fetch meanings for a specific zodiac sign
 // @access  Public
@@ -219,42 +255,9 @@ router.get("/meanings/:zodiac", async (req, res) => {
   }
 });
 
-router.get("/:planet/:zodiac", (req, res) => {
-  const { planet, zodiac } = req.params;
-  
-  console.log(`Fetching interpretation for ${planet} in ${zodiac}`);
-  
-  // Validate planet name (table name)
-  const validPlanets = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', 'neptune', 'pluto', 'chiron', 'ascendant'];
-  
-  if (!validPlanets.includes(planet.toLowerCase())) {
-    return res.status(400).json({ error: "Invalid planet name" });
-  }
-
-  const tableName = planet.toLowerCase();
-  const query = `SELECT Description FROM ${tableName} WHERE ZodiacSign = ? LIMIT 1`;
-  
-  db.query(query, [zodiac], (err, results) => {
-    if (err) {
-      console.error(`Error fetching from ${tableName}:`, err);
-      return res.status(500).json({ error: "Failed to retrieve interpretation." });
-    }
-    
-    if (results.length === 0) {
-      return res.status(404).json({ 
-        error: "No interpretation found",
-        description: `Không tìm thấy giải thích cho ${planet} trong ${zodiac}`
-      });
-    }
-    
-    res.status(200).json({ 
-      planet,
-      zodiac,
-      description: results[0].Description 
-    });
-  });
-});
-
+// @route   POST /api/astrology/meanings/:zodiac
+// @desc    Save meanings for a specific zodiac sign
+// @access  Public
 router.post("/meanings/:zodiac", async (req, res) => {
   const { zodiac } = req.params;
   const { meanings } = req.body; // Array of meanings corresponding to each system

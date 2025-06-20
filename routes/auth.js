@@ -1,25 +1,39 @@
 const express = require('express');
 const db = require('../db');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { generateOTP, sendOTPEmail } = require('../emailService');
 require('dotenv').config();
 
 const router = express.Router();
-const saltRounds = 10; // Adjust for a balance between speed and security
+const saltRounds = 10;
+
+// In-memory storage for OTPs (in production, use Redis or database)
+const otpStorage = new Map();
+
+// Helper function to determine if input is email or phone
+const isEmail = (input) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(input);
+};
 
 // User Signup
 router.post('/signup', (req, res) => {
   const { phone, fullname, email, password, confirmPassword } = req.body;
 
-  // Basic input validation
-  if (!phone || !fullname || !password || !confirmPassword) {
-    return res.status(400).json({ error: 'Phone, fullname, password, and confirm password are required.' });
+  if (!phone || !fullname || !email || !password || !confirmPassword) {
+    return res.status(400).json({ error: 'Phone, fullname, email, password, and confirm password are required.' });
   }
+  
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+  
   if (password !== confirmPassword) {
     return res.status(400).json({ error: 'Passwords do not match.' });
   }
 
-  // Check if a user with this phone already exists
   const checkQuery = 'SELECT idaccount FROM account WHERE phone = ?';
   db.query(checkQuery, [phone], (err, results) => {
     if (err) {
@@ -30,35 +44,49 @@ router.post('/signup', (req, res) => {
       return res.status(400).json({ error: 'A user with this phone already exists.' });
     }
 
-    // Hash the password
-    bcrypt.hash(password, saltRounds, (hashErr, hashedPassword) => {
-      if (hashErr) {
-        console.error(hashErr);
-        return res.status(500).json({ error: 'Error processing password' });
+    const checkEmailQuery = 'SELECT idaccount FROM account WHERE email = ?';
+    db.query(checkEmailQuery, [email], (emailErr, emailResults) => {
+      if (emailErr) {
+        console.error(emailErr);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      if (emailResults.length > 0) {
+        return res.status(400).json({ error: 'A user with this email already exists.' });
       }
 
-      const insertQuery = 'INSERT INTO account (phone, fullname, email, password) VALUES (?, ?, ?, ?)';
-      db.query(insertQuery, [phone, fullname, email || null, hashedPassword], (insertErr, result) => {
-        if (insertErr) {
-          console.error(insertErr);
-          return res.status(500).json({ error: 'Database error' });
+      bcrypt.hash(password, saltRounds, (hashErr, hashedPassword) => {
+        if (hashErr) {
+          console.error(hashErr);
+          return res.status(500).json({ error: 'Error processing password' });
         }
-        res.status(201).json({ message: 'User created successfully' });
+
+        const insertQuery = 'INSERT INTO account (phone, fullname, email, password) VALUES (?, ?, ?, ?)';
+        db.query(insertQuery, [phone, fullname, email, hashedPassword], (insertErr, result) => {
+          if (insertErr) {
+            console.error(insertErr);
+            return res.status(500).json({ error: 'Database error' });
+          }
+          res.status(201).json({ message: 'User created successfully' });
+        });
       });
     });
   });
 });
 
-// User Login
+// Updated User Login - supports both email and phone
 router.post('/login', (req, res) => {
-  const { phone, password } = req.body;
+  const { emailOrPhone, password } = req.body;
 
-  if (!phone || !password) {
-    return res.status(400).json({ error: 'Phone and password are required.' });
+  if (!emailOrPhone || !password) {
+    return res.status(400).json({ error: 'Email/phone and password are required.' });
   }
 
-  const query = 'SELECT * FROM account WHERE phone = ?';
-  db.query(query, [phone], (err, results) => {
+  const isEmailInput = isEmail(emailOrPhone);
+  const query = isEmailInput 
+    ? 'SELECT * FROM account WHERE email = ?'
+    : 'SELECT * FROM account WHERE phone = ?';
+
+  db.query(query, [emailOrPhone], (err, results) => {
     if (err) {
       console.error(err);
       return res.status(500).json({ error: 'Database error' });
@@ -77,139 +105,170 @@ router.post('/login', (req, res) => {
         return res.status(400).json({ error: 'Invalid credentials' });
       }
 
-      // Create a JWT token carrying minimal user information including role
       const token = jwt.sign(
         { 
           idaccount: user.idaccount, 
           phone: user.phone,
-          role: user.role || null // Include role in the token
+          email: user.email,
+          role: user.role || null
         },
         process.env.JWT_SECRET || 'defaultSecretKey',
         { expiresIn: '1h' }
       );
 
-      // Store token in an HTTP-only cookie
       res.cookie('access_token', token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production', // ensures HTTPS in production
+        secure: process.env.NODE_ENV === 'production',
         sameSite: 'Strict'
       });
 
-      // Send token and role in response for frontend storage
       res.json({ 
         message: 'Login successful',
         token: token,
-        userRole: user.role // Send role to the client
+        userRole: user.role
       });
     });
   });
 });
 
-// Get user profile (protected route)
-router.get('/profile', (req, res) => {
-  // Try to get token from cookie first, then from Authorization header
-  let token = req.cookies.access_token;
-  
-  console.log("Debug - Backend token check:", {
-    hasCookie: !!req.cookies.access_token,
-    cookieValue: req.cookies.access_token ? req.cookies.access_token.substring(0, 20) + "..." : "none",
-    hasAuthHeader: !!req.headers.authorization,
-    authHeaderValue: req.headers.authorization ? req.headers.authorization.substring(0, 30) + "..." : "none"
-  });
-  
-  if (!token) {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7); // Remove "Bearer " prefix
-    }
-  }
-  
-  if (!token) {
-    console.log("No token found in either cookie or Authorization header");
-    return res.status(401).json({ error: 'No token provided.' });
+// Send OTP for password reset
+router.post('/send-reset-otp', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required.' });
   }
 
-  console.log("Token found, verifying:", token.substring(0, 20) + "...");
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+
+  // Check if user exists
+  const query = 'SELECT * FROM account WHERE email = ?';
+  db.query(query, [email], async (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'No account found with this email address.' });
+    }
+
+    const user = results[0];
+    const otp = generateOTP();
+    
+    // Store OTP with expiration (10 minutes)
+    const otpData = {
+      otp: otp,
+      email: email,
+      timestamp: Date.now(),
+      expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes
+    };
+    otpStorage.set(email, otpData);
+
+    // Send OTP via email
+    try {
+      const emailResult = await sendOTPEmail(email, otp, user.fullname);
+      if (emailResult.success) {
+        res.json({ 
+          message: 'Mã xác thực đã được gửi đến email của bạn',
+          success: true 
+        });
+      } else {
+        console.error('Email sending failed:', emailResult.error);
+        res.status(500).json({ error: 'Failed to send verification code. Please try again.' });
+      }
+    } catch (error) {
+      console.error('Error sending OTP email:', error);
+      res.status(500).json({ error: 'Failed to send verification code. Please try again.' });
+    }
+  });
+});
+
+// Get user profile (protected route)
+router.get('/profile', (req, res) => {
+  const token = req.cookies.access_token;
+  if (!token) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
 
   jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
     if (err) {
-      console.error("JWT verification failed:", err.message);
       return res.status(401).json({ error: 'Invalid token.' });
     }
 
-    console.log("JWT verified successfully, decoded:", decoded);
-
-    // Use the decoded token to fetch the user's data
     const userId = decoded.idaccount;
     const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
     db.query(profileQuery, [userId], (err, results) => {
       if (err) {
-        console.error("Database error:", err);
+        console.error(err);
         return res.status(500).json({ error: 'Database error.' });
       }
       if (results.length === 0) {
-        console.log("User not found for ID:", userId);
         return res.status(404).json({ error: 'User not found.' });
       }
-      
-      console.log("Profile data found:", results[0]);
       res.json(results[0]);
     });
   });
 });
 
 router.put('/profile', (req, res) => {
-  // Try to get token from cookie first, then from Authorization header
-  let token = req.cookies.access_token;
-  
+  const token = req.cookies.access_token;
   if (!token) {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7); // Remove "Bearer " prefix
-    }
-  }
-  
-  if (!token) {
-    return res.status(401).json({ error: 'No token provided.' });
+    return res.status(401).json({ error: 'Not authenticated.' });
   }
 
   jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
     if (err) {
-      console.error("JWT verification failed:", err.message);
       return res.status(401).json({ error: 'Invalid token.' });
     }
 
     const userId = decoded.idaccount;
-    const { fullname, email } = req.body;
+    const { fullname, email, phone } = req.body;
 
-    // Basic validation
-    if (!fullname) {
-      return res.status(400).json({ error: 'Full name is required.' });
+    if (!fullname || !email || !phone) {
+      return res.status(400).json({ error: 'Fullname, email, and phone are required.' });
     }
 
-    // Update user profile (phone should not be changeable for security reasons)
-    const updateQuery = 'UPDATE account SET fullname = ?, email = ? WHERE idaccount = ?';
-    db.query(updateQuery, [fullname, email || null, userId], (err, result) => {
-      if (err) {
-        console.error("Database error:", err);
-        return res.status(500).json({ error: 'Database error updating profile.' });
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    const checkEmailQuery = 'SELECT idaccount FROM account WHERE email = ? AND idaccount != ?';
+    db.query(checkEmailQuery, [email, userId], (emailErr, emailResults) => {
+      if (emailErr) {
+        console.error(emailErr);
+        return res.status(500).json({ error: 'Database error checking email.' });
       }
-      
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ error: 'User not found.' });
+      if (emailResults.length > 0) {
+        return res.status(400).json({ error: 'This email is already in use by another account.' });
       }
 
-      // Return updated profile data
-      const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
-      db.query(profileQuery, [userId], (err, results) => {
-        if (err) {
-          console.error("Database error:", err);
-          return res.status(500).json({ error: 'Database error.' });
+      const checkPhoneQuery = 'SELECT idaccount FROM account WHERE phone = ? AND idaccount != ?';
+      db.query(checkPhoneQuery, [phone, userId], (phoneErr, phoneResults) => {
+        if (phoneErr) {
+          console.error(phoneErr);
+          return res.status(500).json({ error: 'Database error checking phone.' });
         }
-        
-        res.json({ 
-          message: 'Profile updated successfully',
-          user: results[0]
+        if (phoneResults.length > 0) {
+          return res.status(400).json({ error: 'This phone number is already in use by another account.' });
+        }
+
+        const updateQuery = 'UPDATE account SET fullname = ?, email = ?, phone = ? WHERE idaccount = ?';
+        db.query(updateQuery, [fullname, email, phone, userId], (updateErr, result) => {
+          if (updateErr) {
+            console.error(updateErr);
+            return res.status(500).json({ error: 'Database error updating profile.' });
+          }
+          if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'User not found.' });
+          }
+          res.json({ 
+            message: 'Profile updated successfully.',
+            user: { fullname, email, phone }
+          });
         });
       });
     });
@@ -218,7 +277,6 @@ router.put('/profile', (req, res) => {
 
 // Change password (protected route)
 router.put('/change-password', (req, res) => {
-  // Access token should be stored in the cookie 'access_token'
   const token = req.cookies.access_token;
   if (!token) {
     return res.status(401).json({ error: 'Not authenticated.' });
@@ -240,7 +298,6 @@ router.put('/change-password', (req, res) => {
       return res.status(400).json({ error: 'New password must be at least 8 characters.' });
     }
 
-    // Fetch user data to compare current password
     const query = 'SELECT * FROM account WHERE idaccount = ?';
     db.query(query, [userId], (err, results) => {
       if (err) {
@@ -252,7 +309,6 @@ router.put('/change-password', (req, res) => {
       }
 
       const user = results[0];
-      // Compare the provided current password with the stored hashed password
       bcrypt.compare(currentPassword, user.password, (compErr, isMatch) => {
         if (compErr) {
           console.error(compErr);
@@ -262,7 +318,6 @@ router.put('/change-password', (req, res) => {
           return res.status(400).json({ error: 'Current password is incorrect.' });
         }
 
-        // Hash the new password
         bcrypt.hash(newPassword, saltRounds, (hashErr, hashedPassword) => {
           if (hashErr) {
             console.error(hashErr);
@@ -283,26 +338,51 @@ router.put('/change-password', (req, res) => {
   });
 });
 
+// Updated reset password to use OTP verification
 router.post("/reset-password", (req, res) => {
-  const { phone, code, newPassword } = req.body;
+  const { emailOrPhone, code, newPassword } = req.body;
 
-  // Basic validation check
-  if (!phone || !code || !newPassword) {
+  if (!emailOrPhone || !code || !newPassword) {
     return res.status(400).json({ error: "All fields are required." });
   }
   if (newPassword.length < 8) {
     return res.status(400).json({ error: "New password must be at least 8 characters." });
   }
 
-  // In production, compare against a stored verification code.
-  // Here, we assume that the valid code is "131313" for testing.
-  if (code !== "131313") {
-    return res.status(400).json({ error: "Invalid verification code." });
+  // Check if it's an email (for OTP verification)
+  const isEmailInput = isEmail(emailOrPhone);
+  
+  if (isEmailInput) {
+    // Verify OTP for email
+    const storedOtpData = otpStorage.get(emailOrPhone);
+    if (!storedOtpData) {
+      return res.status(400).json({ error: "No verification code found. Please request a new code." });
+    }
+    
+    if (Date.now() > storedOtpData.expiresAt) {
+      otpStorage.delete(emailOrPhone);
+      return res.status(400).json({ error: "Verification code has expired. Please request a new code." });
+    }
+    
+    if (storedOtpData.otp !== code) {
+      return res.status(400).json({ error: "Invalid verification code." });
+    }
+    
+    // OTP is valid, remove it from storage
+    otpStorage.delete(emailOrPhone);
+  } else {
+    // For phone numbers, keep the hardcoded verification for backward compatibility
+    if (code !== "131313") {
+      return res.status(400).json({ error: "Invalid verification code." });
+    }
   }
 
-  // Look up the user by phone number.
-  const query = "SELECT * FROM account WHERE phone = ?";
-  db.query(query, [phone], (err, results) => {
+  // Find user and update password
+  const query = isEmailInput 
+    ? "SELECT * FROM account WHERE email = ?"
+    : "SELECT * FROM account WHERE phone = ?";
+
+  db.query(query, [emailOrPhone], (err, results) => {
     if (err) {
       console.error(err);
       return res.status(500).json({ error: "Database error." });
@@ -311,16 +391,15 @@ router.post("/reset-password", (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
 
-    // Hash the new password.
+    const user = results[0];
     bcrypt.hash(newPassword, saltRounds, (hashErr, hashedPassword) => {
       if (hashErr) {
         console.error(hashErr);
         return res.status(500).json({ error: "Error processing new password." });
       }
 
-      // Update the password in the database.
-      const updateQuery = "UPDATE account SET password = ? WHERE phone = ?";
-      db.query(updateQuery, [hashedPassword, phone], (updateErr, updateResult) => {
+      const updateQuery = "UPDATE account SET password = ? WHERE idaccount = ?";
+      db.query(updateQuery, [hashedPassword, user.idaccount], (updateErr, updateResult) => {
         if (updateErr) {
           console.error(updateErr);
           return res.status(500).json({ error: "Database error updating password." });
@@ -331,6 +410,14 @@ router.post("/reset-password", (req, res) => {
   });
 });
 
-
+// Clean up expired OTPs periodically (run this with a cron job in production)
+setInterval(() => {
+  const now = Date.now();
+  for (const [email, otpData] of otpStorage.entries()) {
+    if (now > otpData.expiresAt) {
+      otpStorage.delete(email);
+    }
+  }
+}, 5 * 60 * 1000); // Clean up every 5 minutes
 
 module.exports = router;
