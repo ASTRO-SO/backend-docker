@@ -187,8 +187,18 @@ router.post('/send-reset-otp', async (req, res) => {
 });
 
 // Get user profile (protected route)
-router.get('/profile', (req, res) => {
-  const token = req.cookies.access_token;
+const authenticateToken = (req, res, next) => {
+  // Try to get token from cookie first (for server-side requests)
+  let token = req.cookies.access_token;
+  
+  // If no cookie token, try Authorization header (for client-side requests)
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    }
+  }
+  
   if (!token) {
     return res.status(401).json({ error: 'Not authenticated.' });
   }
@@ -197,141 +207,125 @@ router.get('/profile', (req, res) => {
     if (err) {
       return res.status(401).json({ error: 'Invalid token.' });
     }
+    req.user = decoded; // Store decoded user info for use in route handlers
+    next();
+  });
+};
 
-    const userId = decoded.idaccount;
-    const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
-    db.query(profileQuery, [userId], (err, results) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Database error.' });
-      }
-      if (results.length === 0) {
-        return res.status(404).json({ error: 'User not found.' });
-      }
-      res.json(results[0]);
-    });
+// Update your profile route to use the middleware
+router.get('/profile', authenticateToken, (req, res) => {
+  const userId = req.user.idaccount; // Get from decoded token
+  const profileQuery = 'SELECT idaccount, phone, fullname, email FROM account WHERE idaccount = ?';
+  db.query(profileQuery, [userId], (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Database error.' });
+    }
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    res.json(results[0]);
   });
 });
 
-router.put('/profile', (req, res) => {
-  const token = req.cookies.access_token;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated.' });
+// Update your profile update route
+router.put('/profile', authenticateToken, (req, res) => {
+  const userId = req.user.idaccount; // Get from decoded token
+  const { fullname, email, phone } = req.body;
+
+  if (!fullname || !email || !phone) {
+    return res.status(400).json({ error: 'Fullname, email, and phone are required.' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
-    if (err) {
-      return res.status(401).json({ error: 'Invalid token.' });
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+
+  const checkEmailQuery = 'SELECT idaccount FROM account WHERE email = ? AND idaccount != ?';
+  db.query(checkEmailQuery, [email, userId], (emailErr, emailResults) => {
+    if (emailErr) {
+      console.error(emailErr);
+      return res.status(500).json({ error: 'Database error checking email.' });
+    }
+    if (emailResults.length > 0) {
+      return res.status(400).json({ error: 'This email is already in use by another account.' });
     }
 
-    const userId = decoded.idaccount;
-    const { fullname, email, phone } = req.body;
-
-    if (!fullname || !email || !phone) {
-      return res.status(400).json({ error: 'Fullname, email, and phone are required.' });
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Please enter a valid email address.' });
-    }
-
-    const checkEmailQuery = 'SELECT idaccount FROM account WHERE email = ? AND idaccount != ?';
-    db.query(checkEmailQuery, [email, userId], (emailErr, emailResults) => {
-      if (emailErr) {
-        console.error(emailErr);
-        return res.status(500).json({ error: 'Database error checking email.' });
+    const checkPhoneQuery = 'SELECT idaccount FROM account WHERE phone = ? AND idaccount != ?';
+    db.query(checkPhoneQuery, [phone, userId], (phoneErr, phoneResults) => {
+      if (phoneErr) {
+        console.error(phoneErr);
+        return res.status(500).json({ error: 'Database error checking phone.' });
       }
-      if (emailResults.length > 0) {
-        return res.status(400).json({ error: 'This email is already in use by another account.' });
+      if (phoneResults.length > 0) {
+        return res.status(400).json({ error: 'This phone number is already in use by another account.' });
       }
 
-      const checkPhoneQuery = 'SELECT idaccount FROM account WHERE phone = ? AND idaccount != ?';
-      db.query(checkPhoneQuery, [phone, userId], (phoneErr, phoneResults) => {
-        if (phoneErr) {
-          console.error(phoneErr);
-          return res.status(500).json({ error: 'Database error checking phone.' });
+      const updateQuery = 'UPDATE account SET fullname = ?, email = ?, phone = ? WHERE idaccount = ?';
+      db.query(updateQuery, [fullname, email, phone, userId], (updateErr, result) => {
+        if (updateErr) {
+          console.error(updateErr);
+          return res.status(500).json({ error: 'Database error updating profile.' });
         }
-        if (phoneResults.length > 0) {
-          return res.status(400).json({ error: 'This phone number is already in use by another account.' });
+        if (result.affectedRows === 0) {
+          return res.status(404).json({ error: 'User not found.' });
         }
-
-        const updateQuery = 'UPDATE account SET fullname = ?, email = ?, phone = ? WHERE idaccount = ?';
-        db.query(updateQuery, [fullname, email, phone, userId], (updateErr, result) => {
-          if (updateErr) {
-            console.error(updateErr);
-            return res.status(500).json({ error: 'Database error updating profile.' });
-          }
-          if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'User not found.' });
-          }
-          res.json({ 
-            message: 'Profile updated successfully.',
-            user: { fullname, email, phone }
-          });
+        res.json({ 
+          message: 'Profile updated successfully.',
+          user: { fullname, email, phone }
         });
       });
     });
   });
 });
 
-// Change password (protected route)
-router.put('/change-password', (req, res) => {
-  const token = req.cookies.access_token;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated.' });
+// Update change password route
+router.put('/change-password', authenticateToken, (req, res) => {
+  const userId = req.user.idaccount;
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required.' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'defaultSecretKey', (err, decoded) => {
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: 'New password must be at least 8 characters.' });
+  }
+
+  const query = 'SELECT * FROM account WHERE idaccount = ?';
+  db.query(query, [userId], (err, results) => {
     if (err) {
-      return res.status(401).json({ error: 'Invalid token.' });
+      console.error(err);
+      return res.status(500).json({ error: 'Database error.' });
+    }
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'User not found.' });
     }
 
-    const userId = decoded.idaccount;
-    const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Current password and new password are required.' });
-    }
-
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters.' });
-    }
-
-    const query = 'SELECT * FROM account WHERE idaccount = ?';
-    db.query(query, [userId], (err, results) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Database error.' });
+    const user = results[0];
+    bcrypt.compare(currentPassword, user.password, (compErr, isMatch) => {
+      if (compErr) {
+        console.error(compErr);
+        return res.status(500).json({ error: 'Error comparing password.' });
       }
-      if (results.length === 0) {
-        return res.status(404).json({ error: 'User not found.' });
+      if (!isMatch) {
+        return res.status(400).json({ error: 'Current password is incorrect.' });
       }
 
-      const user = results[0];
-      bcrypt.compare(currentPassword, user.password, (compErr, isMatch) => {
-        if (compErr) {
-          console.error(compErr);
-          return res.status(500).json({ error: 'Error comparing password.' });
-        }
-        if (!isMatch) {
-          return res.status(400).json({ error: 'Current password is incorrect.' });
+      bcrypt.hash(newPassword, saltRounds, (hashErr, hashedPassword) => {
+        if (hashErr) {
+          console.error(hashErr);
+          return res.status(500).json({ error: 'Error processing new password.' });
         }
 
-        bcrypt.hash(newPassword, saltRounds, (hashErr, hashedPassword) => {
-          if (hashErr) {
-            console.error(hashErr);
-            return res.status(500).json({ error: 'Error processing new password.' });
+        const updateQuery = 'UPDATE account SET password = ? WHERE idaccount = ?';
+        db.query(updateQuery, [hashedPassword, userId], (updateErr, result) => {
+          if (updateErr) {
+            console.error(updateErr);
+            return res.status(500).json({ error: 'Database error updating password.' });
           }
-
-          const updateQuery = 'UPDATE account SET password = ? WHERE idaccount = ?';
-          db.query(updateQuery, [hashedPassword, userId], (updateErr, result) => {
-            if (updateErr) {
-              console.error(updateErr);
-              return res.status(500).json({ error: 'Database error updating password.' });
-            }
-            res.json({ message: 'Password updated successfully.' });
-          });
+          res.json({ message: 'Password updated successfully.' });
         });
       });
     });
